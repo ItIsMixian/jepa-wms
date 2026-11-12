@@ -29,18 +29,28 @@ def main():
                 valid.extend((e>max(1e-8,1e-4*median)).tolist())
         assert ids==[g['group_id'] for g in groups]
         costs=np.concatenate(costs,axis=2);mses=np.concatenate(mses,axis=2)
-        real=np.concatenate(real);physical=np.concatenate(physical);valid=np.array(valid)
+        real=np.concatenate(real).astype(np.float64);physical=np.concatenate(physical);valid=np.array(valid)
         rd=real[:,pair[0]]-real[:,pair[1]];energy=(rd*rd).mean(1)
         rows=[]
         for hi,history in enumerate(provenance['histories']):
           for si,scale in enumerate(provenance['scales']):
-            pred=costs[hi,si];pd=pred[:,pair[0]]-pred[:,pair[1]]
+            pred=costs[hi,si].astype(np.float64);pd=pred[:,pair[0]]-pred[:,pair[1]]
+            pn=np.linalg.norm(pd,axis=1);tn=np.linalg.norm(rd,axis=1)
+            ratio=pn/np.maximum(tn,1e-30)
+            cosine=(pd*rd).sum(1)/np.maximum(pn*tn,1e-30)
+            radial=(ratio-1)**2
+            direction=2*ratio*(1-cosine)
+            direct=((pd-rd)**2).mean(1)/np.maximum(energy,1e-30)
+            assert np.allclose((radial+direction)[valid],direct[valid],rtol=1e-8,atol=1e-8)
             chosen=pred.argmin(1); idx=np.arange(len(real))
             vectors={'landscape_error':((pd-rd)**2).mean(1)/np.maximum(energy,1e-30),
                      'pairwise_accuracy':(pd*rd>0).mean(1),'endpoint_mse':mses[hi,si],
                      'latent_top1_regret':real[idx,chosen]-real.min(1),
                      'physical_top1_regret_m':physical[idx,chosen]-physical.min(1),
-                     'physical_selected_distance_m':physical[idx,chosen]}
+                     'physical_selected_distance_m':physical[idx,chosen],
+                     'response_rms_ratio':ratio,'cost_difference_cosine':cosine,
+                     'radial_error_component':radial,'direction_error_component':direction,
+                     'zero_predicted_difference_fraction':(pn==0).astype(float)}
             for cohort,mask in cohorts.items():
                 selected=mask&valid
                 if not selected.any():continue
@@ -63,7 +73,8 @@ def main():
              'notes':['No online control outcomes collected; minima are descriptive and must not be deployed based on these diagnostics alone.',
                       'Scalar values and raw latent errors are model-dependent; compare physical regret or within-model trends.',
                       'Common validation means LeWM source-clip validation intersected with JEPA episode validation; it is not wholly unseen physical episodes for LeWM.',
-                      'Only one training seed; no training-seed robustness claim.'],
+                      'Only one training seed; no training-seed robustness claim.',
+                      'Exact normalized pairwise-loss decomposition: L=(r-1)^2+2*r*(1-cosine), with r=||predicted differences||/||real differences||. The direction term is weighted by r; components are not independent causal effects. Cosine is not pairwise sign accuracy or physical correctness. Zero predicted norm uses cosine=0.'],
              'optimizer_steps':0}
     path=a.out/'cross_model_summary.json'
     with path.open('x') as f:json.dump(summary,f,indent=2)
